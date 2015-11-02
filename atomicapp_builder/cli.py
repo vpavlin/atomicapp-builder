@@ -10,6 +10,9 @@ from atomicapp_builder import constants
 from atomicapp_builder import exceptions
 from atomicapp_builder import resolver
 
+#FIXME
+from atomic_reactor import api as arapi
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,6 +51,13 @@ def create_parser():
         dest='check_binary_images',
         # TODO: do we want to check standard means of obtaining the image (e.g. docker.io)?
         help='Check whether binary images are obtainable from given registry',
+        action='store_true',
+        default=False)
+    build_sp.add_argument(
+        '--build-binary-images',
+        dest='build_binary_images',
+        # TODO: do we want to check standard means of obtaining the image (e.g. docker.io)?
+        help='Build binary images missing from given registry',
         action='store_true',
         default=False)
     build_sp.add_argument(
@@ -104,6 +114,16 @@ def build(args):
         func_result = 0
         logger.info('Building apps %s', ', '.join(map(lambda a: a.appid, apps)))
         for a in apps:
+            if args['check_binary_images'] or args['build_binary_images']:
+                func_result = _check_binary_images(a, args['build_binary_images'],  Builder(
+                    args['build_image'],
+                    None,
+                    registry=args['docker_registry'],
+                    registry_insecure=args['registry_insecure'],
+                ))
+                if func_result:
+                    break  # fail fast
+
             if a.meta_image.built and args['s-kip_if_present']:
                 logger.info('Meta image for app "{0}" already built, skipping'.format(a.appid))
             else:
@@ -128,27 +148,39 @@ def build(args):
                             format(doing=doing_what, mi=a.meta_image.imagename, app=a.appid,
                                    result='succeeded' if res else 'failed')
                             )
-            if args['check_binary_images']:
-                func_result = _check_binary_images(a)
-                if func_result:
-                    break  # fail fast
-
+            
         if args['keep_tmpdir']:
             logger.info('You can find sources of all apps in {0}'.format(tmpdir))
 
         return func_result
 
 
-def _check_binary_images(app):
+def _check_binary_images(app, build=False, bldr=None):
     logger.info('Checking for binary images required for app "{0}" ...'.format(app.appid))
     for bi in app.binary_images:
         if bi.built:
             logger.info('Binary image "{0}" exists.'.format(bi.imagename))
         else:
-            logger.error('Binary image "{0}" doesn\'t exist'.format(bi.imagename))
-            return 2
+            res = False
+            if build:
+                res = _build_binary_images(app, bldr)
+            if not res:
+                logger.error('Binary image "{0}" doesn\'t exist'.format(bi.imagename))
+                return 2
     return 0
 
+def _build_binary_images(app, bldr):
+    if not bldr:
+        return
+
+    for image in app.binary_images:
+        image.vcs_local_path = "."
+        bldr.image_info = image
+        res = bldr.build()
+        if not res:
+            return res
+
+    return True
 
 class TempDir(object):
     """A context manager that simulates tempfile.TemporaryDirectory, but can be told
